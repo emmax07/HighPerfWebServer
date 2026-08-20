@@ -10,10 +10,15 @@ endif()
 
 include_directories(include)
 
-# Server Core Library
+find_package(Threads REQUIRED)
+
+# Server Core Library (Added src/thread_pool.cpp)
 add_library(server_lib
     src/server.cpp
+    src/thread_pool.cpp
 )
+
+target_link_libraries(server_lib PUBLIC Threads::Threads)
 
 if(WIN32)
     target_link_libraries(server_lib PUBLIC ws2_32)

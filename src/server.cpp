@@ -2,9 +2,10 @@
 #include <iostream>
 #include <vector>
 
-TcpServer::TcpServer(const std::string& host, uint16_t port)
+TcpServer::TcpServer(const std::string& host, uint16_t port, size_t thread_count)
     : host_(host), port_(port) {
     init_sockets();
+    thread_pool_ = std::make_unique<ThreadPool>(thread_count);
 }
 
 TcpServer::~TcpServer() {
@@ -19,7 +20,6 @@ bool TcpServer::bind_and_listen() {
         return false;
     }
 
-    // Allow address reuse (SO_REUSEADDR)
     int opt = 1;
     setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&opt), sizeof(opt));
 
@@ -55,7 +55,7 @@ bool TcpServer::start() {
         return false;
     }
     is_running_ = true;
-    std::cout << "[TcpServer] Listening on http://" << host_ << ":" << port_ << std::endl;
+    std::cout << "[TcpServer] Multithreaded server listening on http://" << host_ << ":" << port_ << std::endl;
     return true;
 }
 
@@ -65,6 +65,9 @@ void TcpServer::stop() {
         if (listen_fd_ != INVALID_SOCKET_VAL) {
             close_socket(listen_fd_);
             listen_fd_ = INVALID_SOCKET_VAL;
+        }
+        if (thread_pool_) {
+            thread_pool_->stop();
         }
         std::cout << "[TcpServer] Server stopped." << std::endl;
     }
@@ -76,16 +79,17 @@ void TcpServer::handle_client(socket_t client_fd) {
 
     if (bytes_received > 0) {
         buffer[bytes_received] = '\0';
-        std::cout << "\n--- Received Request ---\n" << buffer.data() << "------------------------\n";
 
-        // Minimal HTTP 200 OK Response
+        // Minimal HTTP Response including active Thread ID
+        std::string body = "Hello from Concurrent C++ Server! Thread ID: " + 
+                           std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+
         std::string response =
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/plain\r\n"
-            "Content-Length: 21\r\n"
+            "Content-Length: " + std::to_string(body.size()) + "\r\n"
             "Connection: close\r\n"
-            "\r\n"
-            "Hello from C++ Server!";
+            "\r\n" + body;
 
         send(client_fd, response.c_str(), static_cast<int>(response.size()), 0);
     }
@@ -93,7 +97,7 @@ void TcpServer::handle_client(socket_t client_fd) {
     close_socket(client_fd);
 }
 
-void TcpServer::run_single_threaded() {
+void TcpServer::run() {
     while (is_running_) {
         sockaddr_in client_addr{};
         #ifdef _WIN32
@@ -109,6 +113,9 @@ void TcpServer::run_single_threaded() {
             continue;
         }
 
-        handle_client(client_fd);
+        // Delegate client socket processing to the ThreadPool worker queue
+        thread_pool_->enqueue([this, client_fd]() {
+            this->handle_client(client_fd);
+        });
     }
 }
